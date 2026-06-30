@@ -8,24 +8,6 @@ interface ThankYouPageProps {
 }
 
 export default function ThankYouPage({ order, onBackToShop }: ThankYouPageProps) {
-  // Format phone number to WhatsApp style (removing leading 0 and adding +234)
-  const formatWhatsAppNumber = (num: string) => {
-    let clean = num.replace(/\D/g, "");
-    if (clean.startsWith("0")) {
-      clean = "234" + clean.substring(1);
-    } else if (!clean.startsWith("234") && clean.length === 10) {
-      clean = "234" + clean;
-    }
-    return clean;
-  };
-
-  const merchantWhatsApp = "2348123456789"; // Replace with merchant's WhatsApp
-  const orderMessage = encodeURIComponent(
-    `Hello, I just ordered the *Men's 7-Piece Luxury Watch Gift Set*.\n\n*Order Details:*\n- *Name:* ${order.fullName}\n- *Phone:* ${order.phoneNo}\n- *State:* ${order.state}\n- *City:* ${order.city}\n- *Address:* ${order.address}\n- *Ref:* ${order.referenceId}\n- *Total:* ₦${order.totalPrice.toLocaleString()}\n\nKindly confirm and ship my order. Thank you!`
-  );
-
-  const whatsappUrl = `https://wa.me/${merchantWhatsApp}?text=${orderMessage}`;
-
   return (
     <div id="thankyou-page-container" className="max-w-3xl mx-auto px-4 py-12 md:py-16">
       <div id="success-card" className="bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden text-center p-8 md:p-12 relative">
@@ -62,29 +44,6 @@ export default function ThankYouPage({ order, onBackToShop }: ThankYouPageProps)
             <div><span className="font-bold text-slate-400 uppercase text-[10px] tracking-wider block">Total Price</span> <span className="text-lg font-black text-slate-900">₦{order.totalPrice.toLocaleString()}</span></div>
             <div><span className="font-bold text-slate-400 uppercase text-[10px] tracking-wider block">Payment Method</span> <span className="font-bold text-slate-900">Pay On Delivery (POD)</span></div>
           </div>
-        </div>
-
-        {/* CALL TO ACTION: INSTANT WHATSAPP CONFIRMATION (EXTREMELY POPULAR IN NIGERIA) */}
-        <div className="bg-slate-900 text-white rounded-lg p-6 md:p-8 mb-8 max-w-xl mx-auto border border-slate-800">
-          <h2 className="font-display font-black text-yellow-400 text-base md:text-lg mb-3 uppercase tracking-wider flex items-center justify-center gap-2">
-            ⚠️ ACTION REQUIRED: EXPEDITE YOUR ORDER!
-          </h2>
-          <p className="text-slate-300 text-xs md:text-sm mb-6 leading-relaxed font-sans">
-            Due to extremely high demand, orders verified via WhatsApp are **dispatched first**! Click the button below to send your details directly to our shipping manager on WhatsApp to secure your box right now.
-          </p>
-          <a
-            href={whatsappUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            id="whatsapp-confirm-btn"
-            className="inline-flex items-center justify-center gap-3 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white font-black text-sm md:text-base px-8 py-4 rounded shadow-lg transition duration-150 uppercase tracking-widest w-full md:w-auto"
-          >
-            <PhoneCall size={18} />
-            Confirm Order via WhatsApp Now
-          </a>
-          <p className="text-slate-400 text-[10px] mt-3 italic font-medium">
-            (Saves up to 48 hours in packaging and delivery delay!)
-          </p>
         </div>
 
         {/* Trust Badges */}

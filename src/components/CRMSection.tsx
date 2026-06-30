@@ -1,15 +1,17 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   auth, googleProvider 
 } from "../lib/firebase";
 import { 
-  signInWithPopup, signOut, onAuthStateChanged, User, signInWithEmailAndPassword 
+  signInWithPopup, signOut, onAuthStateChanged, User, signInWithEmailAndPassword,
+  createUserWithEmailAndPassword, updateProfile
 } from "firebase/auth";
 import { 
   db 
 } from "../lib/firebase";
 import { 
-  collection, query, orderBy, onSnapshot, doc, updateDoc, deleteDoc, getDocs 
+  collection, query, orderBy, onSnapshot, doc, updateDoc, deleteDoc, getDocs,
+  getDoc, setDoc
 } from "firebase/firestore";
 import { 
   Order, OrderStatus, CRMStats 
@@ -17,11 +19,19 @@ import {
 import { 
   Lock, LogOut, Search, Filter, Phone, PhoneCall, Trash2, CheckCircle2, 
   Truck, CheckSquare, XCircle, Clock, RefreshCw, BarChart3, Download, MapPin, Info,
-  Mail, Key
+  Mail, Key, UserPlus, Bell, Volume2, VolumeX, Sparkles
 } from "lucide-react";
 
 interface CRMSectionProps {
   onBackToLanding: () => void;
+}
+
+interface AdminNotification {
+  id: string;
+  type: "new" | "updated";
+  title: string;
+  message: string;
+  timestamp: Date;
 }
 
 export default function CRMSection({ onBackToLanding }: CRMSectionProps) {
@@ -31,6 +41,57 @@ export default function CRMSection({ onBackToLanding }: CRMSectionProps) {
   
   const [orders, setOrders] = useState<Order[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  
+  // Real-time Notification States
+  const [notifications, setNotifications] = useState<AdminNotification[]>([]);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const isInitialLoad = useRef(true);
+
+  // Synthesize elegant double-chime merchant sound using Web Audio API
+  const playNotificationSound = () => {
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) return;
+      const ctx = new AudioContextClass();
+      const now = ctx.currentTime;
+      
+      const playTone = (freq: number, startTime: number, duration: number, volume: number) => {
+        const osc = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+        
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, startTime);
+        
+        gainNode.gain.setValueAtTime(volume, startTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+        
+        osc.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        
+        osc.start(startTime);
+        osc.stop(startTime + duration + 0.1);
+      };
+      
+      // Crisp commercial sound (ascending tones)
+      playTone(523.25, now, 0.22, 0.12);        // C5
+      playTone(659.25, now + 0.08, 0.22, 0.12); // E5
+      playTone(783.99, now + 0.16, 0.22, 0.12); // G5
+      playTone(1046.50, now + 0.24, 0.35, 0.15); // C6 (crisp, final tone)
+    } catch (e) {
+      console.warn("Audio Context playback failed or blocked by autoplay policy", e);
+    }
+  };
+
+  const triggerNotification = (notif: AdminNotification) => {
+    setNotifications((prev) => [notif, ...prev].slice(0, 5));
+    if (soundEnabled) {
+      playNotificationSound();
+    }
+    // Auto-dismiss after 6 seconds to prevent clutter
+    setTimeout(() => {
+      setNotifications((prev) => prev.filter((n) => n.id !== notif.id));
+    }, 6000);
+  };
   const [statusFilter, setStatusFilter] = useState<string>("All");
   const [stateFilter, setStateFilter] = useState<string>("All");
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -54,13 +115,38 @@ export default function CRMSection({ onBackToLanding }: CRMSectionProps) {
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
   const [loginMethod, setLoginMethod] = useState<"email" | "google">("email");
+  const [isRegisterMode, setIsRegisterMode] = useState(false);
+
+  // Admin manual registration states
+  const [regEmail, setRegEmail] = useState("");
+  const [regPassword, setRegPassword] = useState("");
+  const [regConfirmPassword, setRegConfirmPassword] = useState("");
+  const [regName, setRegName] = useState("");
+  const [regSuccess, setRegSuccess] = useState<string | null>(null);
 
   // Watch Auth State
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
-      if (currentUser && currentUser.email === ADMIN_EMAIL) {
-        setIsAdmin(true);
+      if (currentUser) {
+        const lowerEmail = currentUser.email?.toLowerCase();
+        if (lowerEmail === ADMIN_EMAIL) {
+          setIsAdmin(true);
+        } else {
+          // Check if this email is in 'admins' collection
+          try {
+            const adminDocRef = doc(db, "admins", lowerEmail || "");
+            const adminDoc = await getDoc(adminDocRef);
+            if (adminDoc.exists()) {
+              setIsAdmin(true);
+            } else {
+              setIsAdmin(false);
+            }
+          } catch (e) {
+            console.error("Checking admin collection failed", e);
+            setIsAdmin(false);
+          }
+        }
       } else {
         setIsAdmin(false);
       }
@@ -77,6 +163,41 @@ export default function CRMSection({ onBackToLanding }: CRMSectionProps) {
     const q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      // Process real-time notifications for active sessions
+      if (!isInitialLoad.current) {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === "added") {
+            const data = change.doc.data();
+            const referenceId = data.referenceId || "REF-NEW";
+            const fullName = data.fullName || "A customer";
+            const totalPrice = data.totalPrice || 78000;
+            
+            triggerNotification({
+              id: change.doc.id,
+              type: "new",
+              title: "🆕 New Order Received!",
+              message: `${fullName} placed an order (${referenceId}) worth ₦${totalPrice.toLocaleString()}`,
+              timestamp: new Date()
+            });
+          } else if (change.type === "modified") {
+            const data = change.doc.data();
+            const referenceId = data.referenceId || "REF-UPD";
+            const fullName = data.fullName || "Customer";
+            const status = data.status || "Pending";
+            
+            triggerNotification({
+              id: change.doc.id,
+              type: "updated",
+              title: `⚙️ Order Status Updated`,
+              message: `Order ${referenceId} (${fullName}) is now "${status}"`,
+              timestamp: new Date()
+            });
+          }
+        });
+      } else {
+        isInitialLoad.current = false;
+      }
+
       const ordersList: Order[] = [];
       let totalRev = 0;
       let pendingCount = 0;
@@ -160,6 +281,75 @@ export default function CRMSection({ onBackToLanding }: CRMSectionProps) {
         errorMessage = "Too many failed attempts. Please try again later.";
       } else if (err.code === "auth/invalid-email") {
         errorMessage = "Please enter a valid email address.";
+      }
+      setAuthError(errorMessage);
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+
+  // Handle Email Register (Manual Admin Account Creation)
+  const handleEmailRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!regEmail || !regPassword || !regConfirmPassword || !regName) {
+      setAuthError("Please fill in all registration fields.");
+      return;
+    }
+    if (regPassword !== regConfirmPassword) {
+      setAuthError("Passwords do not match.");
+      return;
+    }
+    if (regPassword.length < 6) {
+      setAuthError("Password must be at least 6 characters.");
+      return;
+    }
+
+    try {
+      setIsAuthenticating(true);
+      setAuthError(null);
+      setRegSuccess(null);
+
+      // Create user in Firebase Auth
+      const userCredential = await createUserWithEmailAndPassword(auth, regEmail, regPassword);
+      
+      if (userCredential.user) {
+        // Set display name on the account
+        await updateProfile(userCredential.user, {
+          displayName: regName
+        });
+
+        const lowerEmail = regEmail.toLowerCase();
+        
+        // Add to 'admins' collection to verify database access rule in Firestore
+        await setDoc(doc(db, "admins", lowerEmail), {
+          email: lowerEmail,
+          displayName: regName,
+          role: "admin",
+          createdAt: new Date()
+        });
+
+        setRegSuccess("Account successfully created! Logging you into CRM...");
+        
+        // Clear registration form fields
+        setRegEmail("");
+        setRegPassword("");
+        setRegConfirmPassword("");
+        setRegName("");
+        
+        setTimeout(() => {
+          setIsRegisterMode(false);
+          setRegSuccess(null);
+        }, 2000);
+      }
+    } catch (err: any) {
+      console.error("Manual registration failed:", err);
+      let errorMessage = "Registration failed. Please try again.";
+      if (err.code === "auth/email-already-in-use") {
+        errorMessage = "This email is already in use by another account.";
+      } else if (err.code === "auth/invalid-email") {
+        errorMessage = "Please enter a valid email address.";
+      } else if (err.code === "auth/weak-password") {
+        errorMessage = "Password is too weak. Please use at least 6 characters.";
       }
       setAuthError(errorMessage);
     } finally {
@@ -334,18 +524,53 @@ export default function CRMSection({ onBackToLanding }: CRMSectionProps) {
         </div>
 
         {user && (
-          <div className="flex items-center gap-3 bg-white border border-slate-200 p-2 rounded shadow-sm self-start md:self-auto font-sans">
-            <div className="text-right">
-              <span className="text-xs font-bold text-slate-950 block">{user.displayName || "Admin User"}</span>
-              <span className="text-[10px] text-slate-400 block">{user.email}</span>
-            </div>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 self-start md:self-auto">
+            {/* Realtime Sound Controller */}
             <button
-              onClick={handleLogout}
-              className="bg-red-50 hover:bg-red-100 text-red-600 p-2.5 rounded transition"
-              title="Sign Out"
+              onClick={() => {
+                const newSoundState = !soundEnabled;
+                setSoundEnabled(newSoundState);
+                if (newSoundState) {
+                  playNotificationSound();
+                }
+              }}
+              className={`flex items-center justify-between gap-2.5 border px-3.5 py-2.5 rounded-lg text-xs font-bold transition shadow-sm font-sans cursor-pointer ${
+                soundEnabled
+                  ? "bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100"
+                  : "bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100"
+              }`}
+              title={soundEnabled ? "Mute notification sounds" : "Unmute notification sounds"}
             >
-              <LogOut size={16} />
+              <div className="flex items-center gap-2">
+                {soundEnabled ? (
+                  <>
+                    <Volume2 size={16} className="text-emerald-600 animate-bounce" />
+                    <span>Live Chimes: ON</span>
+                  </>
+                ) : (
+                  <>
+                    <VolumeX size={16} className="text-slate-400" />
+                    <span>Live Chimes: MUTED</span>
+                  </>
+                )}
+              </div>
+              {soundEnabled && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />}
             </button>
+
+            {/* User Profile and Sign out */}
+            <div className="flex items-center gap-3 bg-white border border-slate-200 p-2 rounded-lg shadow-sm font-sans">
+              <div className="text-right">
+                <span className="text-xs font-bold text-slate-950 block">{user.displayName || "Admin User"}</span>
+                <span className="text-[10px] text-slate-400 block">{user.email}</span>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="bg-red-50 hover:bg-red-100 text-red-600 p-2.5 rounded-md transition cursor-pointer"
+                title="Sign Out"
+              >
+                <LogOut size={16} />
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -353,137 +578,261 @@ export default function CRMSection({ onBackToLanding }: CRMSectionProps) {
       {/* LOGIN VIEW SECURED BY AUTHORIZED ADMIN EMAIL */}
       {!user ? (
         <div className="max-w-md mx-auto bg-white rounded-xl shadow-lg border border-slate-200 p-8 my-12">
-          <div className="text-center mb-6">
-            <div className="bg-slate-50 text-slate-800 p-4 rounded-full border border-slate-200 w-16 h-16 flex items-center justify-center mx-auto mb-4 shadow-inner">
-              <Lock size={28} className="text-slate-700" />
-            </div>
-            <h2 className="font-display text-2xl font-black text-slate-900 mb-1 uppercase tracking-tight">Authorized CRM Login</h2>
-            <p className="text-slate-500 text-xs leading-relaxed font-sans">
-              Enter your credentials below to access the administrative dashboard.
-            </p>
-          </div>
-
-          {/* Tab Switcher */}
-          <div className="flex border border-slate-200 rounded-lg p-1 bg-slate-50 mb-6">
-            <button
-              type="button"
-              onClick={() => { setLoginMethod("email"); setAuthError(null); }}
-              className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${
-                loginMethod === "email"
-                  ? "bg-white text-slate-900 shadow-sm border border-slate-200"
-                  : "text-slate-500 hover:text-slate-800"
-              }`}
-            >
-              Email & Password
-            </button>
-            <button
-              type="button"
-              onClick={() => { setLoginMethod("google"); setAuthError(null); }}
-              className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${
-                loginMethod === "google"
-                  ? "bg-white text-slate-900 shadow-sm border border-slate-200"
-                  : "text-slate-500 hover:text-slate-800"
-              }`}
-            >
-              Google Account
-            </button>
-          </div>
-
-          {authError && (
-            <div className="bg-red-50 border border-red-200 text-red-700 text-xs px-4 py-3 rounded-lg mb-4 font-sans flex items-start gap-2">
-              <span className="font-bold">Error:</span>
-              <p className="flex-1">{authError}</p>
-            </div>
-          )}
-
-          {loginMethod === "email" ? (
-            <form onSubmit={handleEmailLogin} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 font-sans">
-                  Email Address
-                </label>
-                <div className="relative">
-                  <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
-                    <Mail size={16} />
-                  </span>
-                  <input
-                    type="email"
-                    required
-                    placeholder="e.g., ibotshopline@gmail.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 hover:bg-slate-100/50 focus:bg-white border border-slate-200 focus:border-slate-900 rounded-lg outline-none transition text-sm text-slate-900 font-sans"
-                  />
+          {isRegisterMode ? (
+            /* REGISTRATION / CREATE ACCOUNT VIEW */
+            <div>
+              <div className="text-center mb-6">
+                <div className="bg-amber-50 text-amber-800 p-4 rounded-full border border-amber-200 w-16 h-16 flex items-center justify-center mx-auto mb-4 shadow-inner">
+                  <UserPlus size={28} className="text-amber-700" />
                 </div>
+                <h2 className="font-display text-2xl font-black text-slate-900 mb-1 uppercase tracking-tight">Create Admin Account</h2>
+                <p className="text-slate-500 text-xs leading-relaxed font-sans">
+                  Register a new administrator account with secure email and password access.
+                </p>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 font-sans">
-                  Password
-                </label>
-                <div className="relative">
-                  <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
-                    <Key size={16} />
-                  </span>
+              {regSuccess && (
+                <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs px-4 py-3 rounded-lg mb-4 font-sans">
+                  <p className="font-bold">{regSuccess}</p>
+                </div>
+              )}
+
+              {authError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 text-xs px-4 py-3 rounded-lg mb-4 font-sans flex items-start gap-2">
+                  <span className="font-bold">Error:</span>
+                  <p className="flex-1">{authError}</p>
+                </div>
+              )}
+
+              <form onSubmit={handleEmailRegister} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 font-sans">
+                    Full Name
+                  </label>
                   <input
-                    type="password"
+                    type="text"
                     required
-                    placeholder="Enter admin password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 hover:bg-slate-100/50 focus:bg-white border border-slate-200 focus:border-slate-900 rounded-lg outline-none transition text-sm text-slate-900 font-sans"
+                    placeholder="e.g., Admin Manager"
+                    value={regName}
+                    onChange={(e) => setRegName(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-slate-50 hover:bg-slate-100/50 focus:bg-white border border-slate-200 focus:border-slate-900 rounded-lg outline-none transition text-sm text-slate-900 font-sans"
                   />
                 </div>
-              </div>
 
-              <button
-                type="submit"
-                disabled={isAuthenticating}
-                className="w-full flex items-center justify-center gap-2 bg-slate-950 hover:bg-slate-800 text-white font-black py-3 px-6 rounded-lg shadow transition disabled:opacity-50 uppercase tracking-wider text-xs cursor-pointer"
-              >
-                {isAuthenticating ? "Verifying..." : "Sign In & Enter CRM"}
-              </button>
-
-              <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3 text-left mt-4">
-                <div className="flex gap-2 text-amber-800">
-                  <Info size={16} className="shrink-0 mt-0.5" />
-                  <div className="text-[10px] leading-relaxed font-sans">
-                    <span className="font-bold">Setup Instruction:</span> Make sure <span className="font-bold">Email/Password</span> sign-in provider is enabled under <span className="font-bold">Authentication &gt; Sign-in method</span> in your Firebase Console, and that the account for <span className="font-bold">ibotshopline@gmail.com</span> is registered.
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 font-sans">
+                    Email Address
+                  </label>
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
+                      <Mail size={16} />
+                    </span>
+                    <input
+                      type="email"
+                      required
+                      placeholder="e.g., ibotshopline@gmail.com"
+                      value={regEmail}
+                      onChange={(e) => setRegEmail(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 bg-slate-50 hover:bg-slate-100/50 focus:bg-white border border-slate-200 focus:border-slate-900 rounded-lg outline-none transition text-sm text-slate-900 font-sans"
+                    />
                   </div>
                 </div>
-              </div>
-            </form>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 font-sans">
+                    Password
+                  </label>
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
+                      <Key size={16} />
+                    </span>
+                    <input
+                      type="password"
+                      required
+                      minLength={6}
+                      placeholder="At least 6 characters"
+                      value={regPassword}
+                      onChange={(e) => setRegPassword(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 bg-slate-50 hover:bg-slate-100/50 focus:bg-white border border-slate-200 focus:border-slate-900 rounded-lg outline-none transition text-sm text-slate-900 font-sans"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 font-sans">
+                    Confirm Password
+                  </label>
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
+                      <Key size={16} />
+                    </span>
+                    <input
+                      type="password"
+                      required
+                      placeholder="Confirm password"
+                      value={regConfirmPassword}
+                      onChange={(e) => setRegConfirmPassword(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 bg-slate-50 hover:bg-slate-100/50 focus:bg-white border border-slate-200 focus:border-slate-900 rounded-lg outline-none transition text-sm text-slate-900 font-sans"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isAuthenticating}
+                  className="w-full flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-700 text-white font-black py-3 px-6 rounded-lg shadow transition disabled:opacity-50 uppercase tracking-wider text-xs cursor-pointer"
+                >
+                  {isAuthenticating ? "Creating Account..." : "Create Admin Account"}
+                </button>
+
+                <div className="text-center pt-4 border-t border-slate-100 mt-4">
+                  <button
+                    type="button"
+                    onClick={() => { setIsRegisterMode(false); setAuthError(null); }}
+                    className="text-xs text-slate-600 hover:text-slate-900 font-bold transition font-sans"
+                  >
+                    Already have an admin account? <span className="text-slate-950 underline">Sign In</span>
+                  </button>
+                </div>
+              </form>
+            </div>
           ) : (
-            <div className="space-y-4 text-center">
-              <p className="text-slate-500 text-xs font-sans leading-relaxed mb-4">
-                Click below to sign in using your authorized merchant Google account securely.
-              </p>
-              <button
-                type="button"
-                onClick={handleLogin}
-                disabled={isAuthenticating}
-                className="w-full flex items-center justify-center gap-3 bg-slate-950 hover:bg-slate-800 text-white font-black py-3 px-6 rounded-lg shadow transition disabled:opacity-50 uppercase tracking-wider text-xs cursor-pointer"
-              >
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                  <path
-                    fill="currentColor"
-                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                  />
-                  <path
-                    fill="currentColor"
-                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                  />
-                  <path
-                    fill="currentColor"
-                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                  />
-                  <path
-                    fill="currentColor"
-                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                  />
-                </svg>
-                <span>Login with Google Admin Auth</span>
-              </button>
+            /* SIGN IN VIEW */
+            <div>
+              <div className="text-center mb-6">
+                <div className="bg-slate-50 text-slate-800 p-4 rounded-full border border-slate-200 w-16 h-16 flex items-center justify-center mx-auto mb-4 shadow-inner">
+                  <Lock size={28} className="text-slate-700" />
+                </div>
+                <h2 className="font-display text-2xl font-black text-slate-900 mb-1 uppercase tracking-tight">Authorized CRM Login</h2>
+                <p className="text-slate-500 text-xs leading-relaxed font-sans">
+                  Enter your credentials below to access the administrative dashboard.
+                </p>
+              </div>
+
+              {/* Tab Switcher */}
+              <div className="flex border border-slate-200 rounded-lg p-1 bg-slate-50 mb-6">
+                <button
+                  type="button"
+                  onClick={() => { setLoginMethod("email"); setAuthError(null); }}
+                  className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${
+                    loginMethod === "email"
+                      ? "bg-white text-slate-900 shadow-sm border border-slate-200"
+                      : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  Email & Password
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setLoginMethod("google"); setAuthError(null); }}
+                  className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${
+                    loginMethod === "google"
+                      ? "bg-white text-slate-900 shadow-sm border border-slate-200"
+                      : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  Google Account
+                </button>
+              </div>
+
+              {authError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 text-xs px-4 py-3 rounded-lg mb-4 font-sans flex items-start gap-2">
+                  <span className="font-bold">Error:</span>
+                  <p className="flex-1">{authError}</p>
+                </div>
+              )}
+
+              {loginMethod === "email" ? (
+                <form onSubmit={handleEmailLogin} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 font-sans">
+                      Email Address
+                    </label>
+                    <div className="relative">
+                      <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
+                        <Mail size={16} />
+                      </span>
+                      <input
+                        type="email"
+                        required
+                        placeholder="e.g., ibotshopline@gmail.com"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 hover:bg-slate-100/50 focus:bg-white border border-slate-200 focus:border-slate-900 rounded-lg outline-none transition text-sm text-slate-900 font-sans"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 font-sans">
+                      Password
+                    </label>
+                    <div className="relative">
+                      <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
+                        <Key size={16} />
+                      </span>
+                      <input
+                        type="password"
+                        required
+                        placeholder="Enter admin password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 hover:bg-slate-100/50 focus:bg-white border border-slate-200 focus:border-slate-900 rounded-lg outline-none transition text-sm text-slate-900 font-sans"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isAuthenticating}
+                    className="w-full flex items-center justify-center gap-2 bg-slate-950 hover:bg-slate-800 text-white font-black py-3 px-6 rounded-lg shadow transition disabled:opacity-50 uppercase tracking-wider text-xs cursor-pointer"
+                  >
+                    {isAuthenticating ? "Verifying..." : "Sign In & Enter CRM"}
+                  </button>
+
+                  <div className="text-center pt-4 border-t border-slate-100 mt-4">
+                    <button
+                      type="button"
+                      onClick={() => { setIsRegisterMode(true); setAuthError(null); }}
+                      className="text-xs text-slate-600 hover:text-slate-900 font-bold transition font-sans"
+                    >
+                      Don't have an admin account? <span className="text-slate-950 underline font-extrabold">Create Account</span>
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="space-y-4 text-center">
+                  <p className="text-slate-500 text-xs font-sans leading-relaxed mb-4">
+                    Click below to sign in using your authorized merchant Google account securely.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleLogin}
+                    disabled={isAuthenticating}
+                    className="w-full flex items-center justify-center gap-3 bg-slate-950 hover:bg-slate-800 text-white font-black py-3 px-6 rounded-lg shadow transition disabled:opacity-50 uppercase tracking-wider text-xs cursor-pointer"
+                  >
+                    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                      <path
+                        fill="currentColor"
+                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                      />
+                      <path
+                        fill="currentColor"
+                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                      />
+                      <path
+                        fill="currentColor"
+                        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                      />
+                      <path
+                        fill="currentColor"
+                        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                      />
+                    </svg>
+                    <span>Login with Google Admin Auth</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -810,6 +1159,45 @@ export default function CRMSection({ onBackToLanding }: CRMSectionProps) {
 
         </div>
       )}
+
+      {/* Real-time Visual Signal Notifications (Floating Stack) */}
+      <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 max-w-sm w-full pointer-events-none">
+        {notifications.map((notif) => (
+          <div
+            key={notif.id + "-" + notif.timestamp.getTime()}
+            className="pointer-events-auto bg-slate-900 text-white rounded-xl shadow-2xl border border-slate-700/50 p-4 flex items-start gap-3 animate-slide-in relative overflow-hidden"
+          >
+            {/* Ambient gold/green pulsing indicator at the side */}
+            <div className={`absolute top-0 left-0 w-1.5 h-full ${notif.type === "new" ? "bg-amber-500" : "bg-blue-500"}`} />
+            
+            <div className={`p-2 rounded-lg shrink-0 ${notif.type === "new" ? "bg-amber-500/10 text-amber-400" : "bg-blue-500/10 text-blue-400"}`}>
+              {notif.type === "new" ? <Bell size={18} className="animate-bounce" /> : <Sparkles size={18} className="animate-pulse" />}
+            </div>
+            
+            <div className="flex-1 min-w-0 pr-4">
+              <h4 className="font-sans font-bold text-sm text-slate-100 flex items-center gap-1.5">
+                {notif.title}
+                <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-ping shrink-0" />
+              </h4>
+              <p className="font-sans text-xs text-slate-300 mt-1 leading-relaxed">
+                {notif.message}
+              </p>
+              <span className="font-mono text-[9px] text-slate-400 mt-1 block">
+                {notif.timestamp.toLocaleTimeString()}
+              </span>
+            </div>
+
+            <button
+              onClick={() => {
+                setNotifications((prev) => prev.filter((n) => n.id !== notif.id));
+              }}
+              className="text-slate-400 hover:text-white rounded p-1 hover:bg-slate-800 transition shrink-0 self-start cursor-pointer"
+            >
+              <XCircle size={14} />
+            </button>
+          </div>
+        ))}
+      </div>
 
     </div>
   );
