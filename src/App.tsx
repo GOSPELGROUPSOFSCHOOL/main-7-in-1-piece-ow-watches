@@ -15,6 +15,29 @@ export default function App() {
   const [currentView, setCurrentView] = useState<ViewState>("landing");
   const [completedOrder, setCompletedOrder] = useState<Order | null>(null);
 
+  // Trigger Facebook Meta Pixel tracking on dynamic view state updates
+  React.useEffect(() => {
+    try {
+      const fbq = (window as any).fbq;
+      if (fbq) {
+        if (currentView === "landing") {
+          fbq("track", "PageView");
+        } else if (currentView === "thankyou" && completedOrder) {
+          fbq("track", "Purchase", {
+            value: completedOrder.totalPrice,
+            currency: "NGN",
+            content_name: "Men's 7-Piece Luxury Watch Gift Set",
+            content_ids: [completedOrder.referenceId || "watch-gift-set"],
+            content_type: "product",
+            num_items: completedOrder.itemQuantity || 1
+          });
+        }
+      }
+    } catch (err) {
+      console.warn("FB Pixel tracking call failed:", err);
+    }
+  }, [currentView, completedOrder]);
+
   const handleOrderSuccess = (order: Order) => {
     setCompletedOrder(order);
     setCurrentView("thankyou");
